@@ -1,0 +1,9 @@
+运行规则
+# PXE 无人值守部署（推荐）—— 跳过确认，直接安装
+.\driver_check_v5.ps1 -AutoInstall -Force -SaveTxt -Wait
+
+# 手动运行 —— 安装前弹出确认提示
+.\driver_check_v5.ps1 -AutoInstall -SaveTxt -Wait
+
+# 仅检测，不安装
+.\driver_check_v5.ps1 -SaveTxt -Wait

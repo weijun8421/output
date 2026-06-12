@@ -1,0 +1,114 @@
+以下是 driver_check_v5.ps1（v5.1）的完整使用规则：
+
+═══════════════════════════════════════════════════════════════
+参数总览
+═══════════════════════════════════════════════════════════════
+参数           类型      默认值            说明
+-OutputDir     string    脚本所在目录       TXT 报告输出路径，仅 -SaveTxt 时生效
+-SaveTxt       switch    $false            开启后将检测结果落盘为 TXT 文件
+-FullScan      switch    $false            全量扫描所有设备类（默认仅扫描关键设备）
+-ExtraClass    string    ""                追加额外设备类，逗号分隔
+-Wait          switch    $false            执行完毕后暂停，按 Enter 退出
+-AutoInstall   switch    $false            PXE 无人值守模式：自动从 C:\Drives 静默安装预置驱动
+
+═══════════════════════════════════════════════════════════════
+两种运行模式
+═══════════════════════════════════════════════════════════════
+
+模式一：仅检测
+  仅扫描驱动状态，控制台输出表格，不安装任何东西。
+
+  .\driver_check_v5.ps1                            仅控制台输出
+  .\driver_check_v5.ps1 -SaveTxt                   控制台 + 生成 TXT 报告
+  .\driver_check_v5.ps1 -SaveTxt -OutputDir "D:\"  指定 TXT 输出目录
+  .\driver_check_v5.ps1 -Wait                      控制台输出后暂停
+  .\driver_check_v5.ps1 -FullScan                  全量扫描所有设备
+  .\driver_check_v5.ps1 -ExtraClass "Keyboard,Mouse"  追加额外设备类
+
+  退出码：0 = 全部正常，1 = 存在异常设备
+
+模式二：PXE 无人值守（检测 + 安装 + 再检测）
+  全程无需人工介入：扫描 → 静默安装 C:\Drives 预置驱动 → 重新扫描 → 对比结果。
+  需要管理员权限。
+
+  .\driver_check_v5.ps1 -AutoInstall                      PXE 无人值守安装
+  .\driver_check_v5.ps1 -AutoInstall -SaveTxt             安装 + 生成两份 TXT
+  .\driver_check_v5.ps1 -AutoInstall -SaveTxt -Wait       安装 + 报告 + 暂停
+  .\driver_check_v5.ps1 -AutoInstall -SaveTxt -OutputDir "D:\Logs" -Wait  完整参数
+
+  退出码：0 = 全部修复，1 = 仍有异常，2 = 非管理员
+
+═══════════════════════════════════════════════════════════════
+检测范围
+═══════════════════════════════════════════════════════════════
+默认扫描的设备类：
+
+  PnP Class       中文标签        备注
+  Display         显卡            含"Microsoft 基本显示适配器"（code=0 但实际缺驱动）
+  Net             网卡
+  Media           声卡
+  HDC             SATA 控制器
+  SCSIAdapter     存储控制器
+  USB             USB 控制器
+  Computer        计算机
+  System          主板芯片组      通过关键词匹配（见下）
+
+System 类关键词：Chipset, SMBus, LPC, Management Engine, PCI Express,
+DRAM, Memory Controller, Host Bridge, ISA Bridge, Root Complex, Thermal Subsystem
+
+═══════════════════════════════════════════════════════════════
+驱动包预置要求
+═══════════════════════════════════════════════════════════════
+目录结构（必须严格匹配）：
+
+  C:\Drives\
+  ├── Intel_Network_Driver\       *.exe    → 网卡优先尝试
+  ├── Realtek_Network_Driver\     *.exe    → Intel 失败时尝试
+  ├── Intel_Graphics_Driver\      *.exe    → 核显 (Intel/HD/UHD/Iris)
+  └── NVIDIA_Graphics_Driver\     *.exe    → 独显 (NVIDIA/GeForce/RTX/GTX/Quadro)
+
+  - 每个目录下取最新（LastWriteTime）的 .exe 文件
+  - 网卡按优先级 Intel → Realtek 依次尝试，成功即跳过
+  - 显卡按设备名自动识别核显/独显，未识别的显卡跳过不装
+  - 每个驱动包最长等待 10 分钟，超时自动终止，防止卡死阻塞后续脚本
+
+═══════════════════════════════════════════════════════════════
+TXT 报告生成规则
+═══════════════════════════════════════════════════════════════
+
+条件                                  行为
+不指定 -SaveTxt                       不生成任何 TXT 文件
+指定 -SaveTxt 但不指定 -OutputDir     生成到脚本所在目录
+指定 -SaveTxt -OutputDir "path"       生成到指定目录（目录不存在则自动创建）
+
+报告数量取决于运行路径：
+
+  场景                              生成报告
+  无异常设备                        1 份：DriverCheck_v5_<主机名>_<时间戳>.txt
+  有异常但未启用 AutoInstall         1 份：同上
+  AutoInstall 但无网卡/显卡异常      1 份：同上
+  AutoInstall 执行安装              2 份：安装前 v5 + 安装后 v5_fixed
+
+═══════════════════════════════════════════════════════════════
+退出码
+═══════════════════════════════════════════════════════════════
+
+  退出码    含义
+  0         全部通过，或安装后全部修复
+  1         存在异常设备
+  2         AutoInstall 需要管理员权限但当前不是
+
+═══════════════════════════════════════════════════════════════
+权限要求
+═══════════════════════════════════════════════════════════════
+
+  操作               权限
+  仅检测             普通用户
+  -AutoInstall       管理员（否则 exit 2）
+
+═══════════════════════════════════════════════════════════════
+安装超时保护
+═══════════════════════════════════════════════════════════════
+  - 每个驱动包安装最长等待 10 分钟
+  - 超时后自动强制终止（taskkill /F /T），记录失败并继续下一个
+  - 脚本不会因个别驱动安装卡死而永久阻塞，保证 PXE 部署流程能继续
