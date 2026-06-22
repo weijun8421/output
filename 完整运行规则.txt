@@ -1,60 +1,68 @@
-以下是 driver_check_v5.ps1（v5.1）的完整使用规则：
+以下是 driver_check v6.2 的完整使用规则：
 
 ═══════════════════════════════════════════════════════════════
-参数总览
+概述
 ═══════════════════════════════════════════════════════════════
-参数           类型      默认值            说明
--OutputDir     string    脚本所在目录       TXT 报告输出路径，仅 -SaveTxt 时生效
--SaveTxt       switch    $false            开启后将检测结果落盘为 TXT 文件
--FullScan      switch    $false            全量扫描所有设备类（默认仅扫描关键设备）
--ExtraClass    string    ""                追加额外设备类，逗号分隔
--Wait          switch    $false            执行完毕后暂停，按 Enter 退出
--AutoInstall   switch    $false            PXE 无人值守模式：自动从 C:\Drives 静默安装预置驱动
+driver_check.exe 是 PXE 部署后的显卡驱动检测与自动安装工具。
+
+  检测 → 自动识别核显/独显 → 从 C:\Drives 静默安装预置驱动 → 重新检测对比结果
+
+仅处理显卡（核显 Intel + 独显 NVIDIA），网卡等其他驱动由 PXE 负责。
+
+═══════════════════════════════════════════════════════════════
+参数
+═══════════════════════════════════════════════════════════════
+参数            类型     默认值            说明
+--output-dir    string   exe 所在目录       TXT 报告输出路径，仅 --save-txt 时生效
+--save-txt      flag     关闭              将检测结果保存为 TXT 文件
+--wait          flag     关闭              执行完毕后暂停，按 Enter 退出
+--auto-install  flag     关闭              PXE 无人值守模式：自动从 C:\Drives 静默安装预置驱动
 
 ═══════════════════════════════════════════════════════════════
 两种运行模式
 ═══════════════════════════════════════════════════════════════
 
 模式一：仅检测
-  仅扫描驱动状态，控制台输出表格，不安装任何东西。
+  仅扫描显卡状态，控制台输出结果，不安装任何东西。无需管理员权限。
 
-  .\driver_check_v5.ps1                            仅控制台输出
-  .\driver_check_v5.ps1 -SaveTxt                   控制台 + 生成 TXT 报告
-  .\driver_check_v5.ps1 -SaveTxt -OutputDir "D:\"  指定 TXT 输出目录
-  .\driver_check_v5.ps1 -Wait                      控制台输出后暂停
-  .\driver_check_v5.ps1 -FullScan                  全量扫描所有设备
-  .\driver_check_v5.ps1 -ExtraClass "Keyboard,Mouse"  追加额外设备类
+  driver_check.exe                         仅控制台输出
+  driver_check.exe --save-txt              控制台 + 生成 TXT 报告
+  driver_check.exe --save-txt --output-dir "D:\Logs"  指定 TXT 输出目录
+  driver_check.exe --wait                  控制台输出后暂停
 
   退出码：0 = 全部正常，1 = 存在异常设备
 
 模式二：PXE 无人值守（检测 + 安装 + 再检测）
-  全程无需人工介入：扫描 → 静默安装 C:\Drives 预置驱动 → 重新扫描 → 对比结果。
-  需要管理员权限。
+  全程无需人工介入。需要管理员权限。
 
-  .\driver_check_v5.ps1 -AutoInstall                      PXE 无人值守安装
-  .\driver_check_v5.ps1 -AutoInstall -SaveTxt             安装 + 生成两份 TXT
-  .\driver_check_v5.ps1 -AutoInstall -SaveTxt -Wait       安装 + 报告 + 暂停
-  .\driver_check_v5.ps1 -AutoInstall -SaveTxt -OutputDir "D:\Logs" -Wait  完整参数
+  driver_check.exe --auto-install                       PXE 无人值守安装
+  driver_check.exe --auto-install --save-txt            安装 + 生成两份 TXT 报告
+  driver_check.exe --auto-install --save-txt --wait     安装 + 报告 + 暂停
+  driver_check.exe --auto-install --save-txt --output-dir "D:\Logs" --wait  完整参数
 
-  退出码：0 = 全部修复，1 = 仍有异常，2 = 非管理员
+  退出码：0 = 全部修复，1 = 仍有异常，2 = 非管理员，3 = WMI 查询失败
 
 ═══════════════════════════════════════════════════════════════
-检测范围
+GPU 识别规则
 ═══════════════════════════════════════════════════════════════
-默认扫描的设备类：
 
-  PnP Class       中文标签        备注
-  Display         显卡            含"Microsoft 基本显示适配器"（code=0 但实际缺驱动）
-  Net             网卡
-  Media           声卡
-  HDC             SATA 控制器
-  SCSIAdapter     存储控制器
-  USB             USB 控制器
-  Computer        计算机
-  System          主板芯片组      通过关键词匹配（见下）
+  类型    识别方式
+  核显    HWID 含 VEN_8086，或名称含 Intel / HD Graphics / UHD Graphics / Iris
+  独显    HWID 含 VEN_10DE，或名称含 NVIDIA / GeForce / RTX / GTX / Quadro
 
-System 类关键词：Chipset, SMBus, LPC, Management Engine, PCI Express,
-DRAM, Memory Controller, Host Bridge, ISA Bridge, Root Complex, Thermal Subsystem
+  NVIDIA 独显进一步按 DEV ID 分两档：
+    低端   DEV 在 {1C81,1C82,1C8C,1C8D,1C8E,1C8F,1D01,1D02}
+           → GTX 1050 Ti 及以下（GP107/GP108），用 NVIDIA_Graphics_Driver\low\
+    高端   其他所有 DEV ID
+           → GTX 1060 及以上，用 NVIDIA_Graphics_Driver\high\
+  如需调整分档，编辑脚本中 NVIDIA_LOW_END_DEVS 集合。
+
+  备用：当 PnP 设备信息不足以识别时，通过 Win32_VideoController 的 PCI 设备 ID 补充判断。
+
+  特殊处理：
+  - "Microsoft 基本显示适配器"（Microsoft Basic Display Adapter）虽显示 code=0，
+    实际表示显卡驱动缺失，脚本自动标记为异常（错误码 28：驱动未安装）。
+  - GPU 类型无法识别时，跳过安装并在日志记录。
 
 ═══════════════════════════════════════════════════════════════
 驱动包预置要求
@@ -62,32 +70,32 @@ DRAM, Memory Controller, Host Bridge, ISA Bridge, Root Complex, Thermal Subsyste
 目录结构（必须严格匹配）：
 
   C:\Drives\
-  ├── Intel_Network_Driver\       *.exe    → 网卡优先尝试
-  ├── Realtek_Network_Driver\     *.exe    → Intel 失败时尝试
-  ├── Intel_Graphics_Driver\      *.exe    → 核显 (Intel/HD/UHD/Iris)
-  └── NVIDIA_Graphics_Driver\     *.exe    → 独显 (NVIDIA/GeForce/RTX/GTX/Quadro)
+  ├── Intel_Graphics_Driver\         *.exe    → 核显驱动包
+  └── NVIDIA_Graphics_Driver\
+      ├── low\                        *.exe    → GTX 1050 Ti 及以下
+      └── high\                       *.exe    → GTX 1060 及以上
 
-  - 每个目录下取最新（LastWriteTime）的 .exe 文件
-  - 网卡按优先级 Intel → Realtek 依次尝试，成功即跳过
-  - 显卡按设备名自动识别核显/独显，未识别的显卡跳过不装
-  - 每个驱动包最长等待 10 分钟，超时自动终止，防止卡死阻塞后续脚本
+  - 每个目录下取最新（修改时间）的 .exe 文件
+  - 只检查实际需要的驱动包，缺一个不影响另一个
+  - 每个驱动包最长等待 10 分钟，超时自动强制终止，防止卡死阻塞后续脚本
+  - 安装完成后循环等待约 60 秒 + 多次 pnputil /scan-devices，确保驱动生效
 
 ═══════════════════════════════════════════════════════════════
 TXT 报告生成规则
 ═══════════════════════════════════════════════════════════════
 
-条件                                  行为
-不指定 -SaveTxt                       不生成任何 TXT 文件
-指定 -SaveTxt 但不指定 -OutputDir     生成到脚本所在目录
-指定 -SaveTxt -OutputDir "path"       生成到指定目录（目录不存在则自动创建）
+条件                                    行为
+不指定 --save-txt                       不生成 TXT 文件
+指定 --save-txt 不指定 --output-dir     生成到 exe 所在目录
+指定 --save-txt --output-dir "path"     生成到指定目录（目录不存在则自动创建）
 
-报告数量取决于运行路径：
+报告数量：
 
-  场景                              生成报告
-  无异常设备                        1 份：DriverCheck_v5_<主机名>_<时间戳>.txt
-  有异常但未启用 AutoInstall         1 份：同上
-  AutoInstall 但无网卡/显卡异常      1 份：同上
-  AutoInstall 执行安装              2 份：安装前 v5 + 安装后 v5_fixed
+  场景                               生成报告
+  无异常设备                         1 份：DriverCheck_v6_<主机名>_<时间戳>.txt
+  有异常但未启用 --auto-install       1 份：同上
+  --auto-install 执行安装             2 份：安装前 v6 + 安装后 v6_fixed
+                                    第二份报告末尾附"--- 驱动安装日志 ---"
 
 ═══════════════════════════════════════════════════════════════
 退出码
@@ -97,18 +105,31 @@ TXT 报告生成规则
   0         全部通过，或安装后全部修复
   1         存在异常设备
   2         AutoInstall 需要管理员权限但当前不是
+  3         WMI 查询失败（无法获取设备信息）
+  99        未预期的脚本异常
+  130       用户中断（Ctrl+C）
 
 ═══════════════════════════════════════════════════════════════
 权限要求
 ═══════════════════════════════════════════════════════════════
 
-  操作               权限
-  仅检测             普通用户
-  -AutoInstall       管理员（否则 exit 2）
+  操作                  权限
+  仅检测                普通用户
+  --auto-install        管理员（否则 exit 2，提示以管理员身份运行）
 
 ═══════════════════════════════════════════════════════════════
-安装超时保护
+安装保护机制
 ═══════════════════════════════════════════════════════════════
-  - 每个驱动包安装最长等待 10 分钟
-  - 超时后自动强制终止（taskkill /F /T），记录失败并继续下一个
-  - 脚本不会因个别驱动安装卡死而永久阻塞，保证 PXE 部署流程能继续
+  - 10 分钟硬超时：每个驱动包最长等待 10 分钟，超时后 taskkill /F /T 强制终止进程树
+  - 安装后 60 秒等待：分 12 轮每轮等待 5 秒 + pnputil /scan-devices
+  - 超时后继续安装下一个驱动（如同时有核显+独显），不阻塞 PXE 流程
+  - NVIDIA 驱动使用 -s -noreboot 参数（-s 小写短横线），Intel 驱动使用 /S /quiet /norestart
+
+═══════════════════════════════════════════════════════════════
+版本历史
+═══════════════════════════════════════════════════════════════
+
+  v6.2 — NVIDIA 独显按 DEV ID 分两档（1\Low / 2\High），自动匹配 1050 Ti 分界线
+  v6.1 — 精简为纯显卡检测安装，移除网卡及其他设备类、简化表格输出
+  v6.0 — Python 重写版，修复 PowerShell 版的预检过严、GPU 识别、等待时间等 6 个问题
+  v5.1 — PowerShell 版，两种模式，超时保护
