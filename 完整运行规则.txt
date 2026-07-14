@@ -7,7 +7,8 @@ driver_check.exe 是 PXE 部署后的显卡驱动检测与自动安装工具。
 
   检测 → 自动识别核显/独显 → 从 C:\Drives 静默安装预置驱动 → 重新检测对比结果
 
-仅处理显卡（核显 Intel + 独显 NVIDIA），网卡等其他驱动由 PXE 负责。
+核显 Intel 强制安装（无论当前驱动状态），独显 NVIDIA 仅异常时安装。
+网卡等其他驱动由 PXE 负责。
 
 ═══════════════════════════════════════════════════════════════
 参数
@@ -33,7 +34,7 @@ driver_check.exe 是 PXE 部署后的显卡驱动检测与自动安装工具。
   退出码：0 = 全部正常，1 = 存在异常设备
 
 模式二：PXE 无人值守（检测 + 安装 + 再检测）
-  全程无需人工介入。需要管理员权限。
+  核显一律强制静默安装，独显仅在检测到异常时安装。需要管理员权限。
 
   driver_check.exe --auto-install                       PXE 无人值守安装
   driver_check.exe --auto-install --save-txt            安装 + 生成两份 TXT 报告
@@ -50,11 +51,20 @@ GPU 识别规则
   核显    HWID 含 VEN_8086，或名称含 Intel / HD Graphics / UHD Graphics / Iris
   独显    HWID 含 VEN_10DE，或名称含 NVIDIA / GeForce / RTX / GTX / Quadro
 
-  NVIDIA 独显进一步按 DEV ID 分两档：
-    低端   DEV 在 {1C81,1C82,1C8C,1C8D,1C8E,1C8F,1D01,1D02}
-           → GTX 1050 Ti 及以下（GP107/GP108），用 NVIDIA_Graphics_Driver\low\
-    高端   其他所有 DEV ID
-           → GTX 1060 及以上，用 NVIDIA_Graphics_Driver\high\
+  Intel 核显/独显按 DEV ID 分三档：
+    legacy      6~10 代酷睿（Skylake → Ice Lake），无 Xe
+                HD 630 / UHD 630，用 Intel_Graphics_Driver\legacy\       (dell 驱动 )
+    maintenance 11~14 代酷睿（Tiger Lake → Raptor Lake），Xe-LP
+                Iris Xe / UHD Xe，用 Intel_Graphics_Driver\maintenance\ (驱动 7088)
+    modern      Core Ultra（Meteor Lake 起，Xe-LPG/Xe2）+ Arc 独显（A/B 系列）
+                Arc Xe / Xe2 / DG2 / Battlemage，用 Intel_Graphics_Driver\modern\ (驱动 8826)
+  如需调整分档，编辑脚本中 INTEL_LEGACY_DEVS 集合。
+
+  NVIDIA 独显按 DEV ID 分两档：
+    低端     Fermi → Pascal（GP107/GP108）
+             GT 630~GTX 1050 Ti 及以下亮机卡，用 NVIDIA_Graphics_Driver\low\
+    高端     其他所有 DEV ID
+             GTX 1060 及以上，用 NVIDIA_Graphics_Driver\high\
   如需调整分档，编辑脚本中 NVIDIA_LOW_END_DEVS 集合。
 
   备用：当 PnP 设备信息不足以识别时，通过 Win32_VideoController 的 PCI 设备 ID 补充判断。
@@ -70,7 +80,10 @@ GPU 识别规则
 目录结构（必须严格匹配）：
 
   C:\Drives\
-  ├── Intel_Graphics_Driver\         *.exe    → 核显驱动包
+  ├── Intel_Graphics_Driver\
+  │   ├── legacy\                     *.exe    → 6~10 代，无 Xe（dell 驱动 ）
+  │   ├── maintenance\                *.exe    → 11~14 代，Xe-LP（驱动 7088）
+  │   └── modern\                     *.exe    → Core Ultra + Arc 独显（驱动 8826）
   └── NVIDIA_Graphics_Driver\
       ├── low\                        *.exe    → GTX 1050 Ti 及以下
       └── high\                       *.exe    → GTX 1060 及以上
@@ -121,15 +134,22 @@ TXT 报告生成规则
 安装保护机制
 ═══════════════════════════════════════════════════════════════
   - 10 分钟硬超时：每个驱动包最长等待 10 分钟，超时后 taskkill /F /T 强制终止进程树
-  - 安装后 60 秒等待：分 12 轮每轮等待 5 秒 + pnputil /scan-devices
+  - 退出码策略：
+    标准成功码(0/2/1641/3010) → 等待 3 秒 + pnputil 刷新，直接返回成功
+    非标准退出码 → 等待 30 秒 + 设备状态验证，以验证结果为准（二扫比退出码更可靠）
   - 超时后继续安装下一个驱动（如同时有核显+独显），不阻塞 PXE 流程
-  - NVIDIA 驱动使用 -s -noreboot 参数（-s 小写短横线），Intel 驱动使用 /S /quiet /norestart
+  - 安装参数：
+    Intel legacy      → /s（小写 s，非官方驱动包）
+    Intel maintenance → /S /quiet /norestart
+    Intel modern      → /S /quiet /norestart
+    NVIDIA low/high   → -s -noreboot（短横线小写）
+  - 核显强制安装：无论当前驱动状态如何，PXE 模式下始终覆盖安装 Intel 核显驱动
 
 ═══════════════════════════════════════════════════════════════
 版本历史
 ═══════════════════════════════════════════════════════════════
 
-  v6.2 — NVIDIA 独显按 DEV ID 分两档（1\Low / 2\High），自动匹配 1050 Ti 分界线
+  v6.2 — Intel 核显三档分选(legacy/maintenance/modern) + 强制安装；NVIDIA 双档；退出码智能判断
   v6.1 — 精简为纯显卡检测安装，移除网卡及其他设备类、简化表格输出
   v6.0 — Python 重写版，修复 PowerShell 版的预检过严、GPU 识别、等待时间等 6 个问题
   v5.1 — PowerShell 版，两种模式，超时保护

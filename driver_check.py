@@ -56,12 +56,39 @@ NVIDIA_LOW_END_DEVS = {
     "1D01", "1D02",
 }
 
+# Intel 核显三档分选：legacy(6~10代) / maintenance(11~14代 Xe-LP) / modern(Core Ultra + Arc)
+INTEL_LEGACY_DEVS = {
+    "1912","191B","191D","191E","1921","1923","1926","1927","192D","193B","193D",  # Gen6 Skylake
+    "5912","5916","5917","591B","591C","591D","591E","5921","5923","5926","5927",  # Gen7 Kaby Lake
+    "3E90","3E91","3E92","3E93","3E94","3E96","3E98","3E99","3E9A","3E9B","3E9C",  # Gen8/9 Coffee Lake
+    "3EA5","3EA6","3EA8","3EAA",
+    "9BC4","9BC5","9BC6","9BC8","9BE6","9BF6",                                   # Gen9.5 Comet Lake
+    "9B21","9B41","9BA2","9BA4","9BA5","9BA8","9BAA","9BAC",
+    "5A84","5A85","87C0","87CA",
+    "8A51","8A52","8A53","8A54","8A56","8A58","8A59","8A5A",                       # Ice Lake 10th
+}
+INTEL_MAINTENANCE_DEVS = {
+    "9A40","9A49","9A59","9A60","9A68","9A70","9A78",                             # Tiger Lake 11th
+    "9AC0","9AC9","9AD9","9AE0","9AE8","9AF0","9AF8",
+    "4600","4610","4626","4628","462A",                                            # Alder Lake 12th
+    "4680","4682","4688","468A","468B","4690","4692","4693",
+    "46A0","46A1","46A2","46A3","46A6","46A8","46AA",
+    "46B0","46B1","46B2","46B3","46C0","46C1","46C3","46D0","46D1","46D2",
+    "A720","A721","A780","A781","A782","A783","A788","A789","A78A","A78B",        # Raptor Lake 13th/14th
+}
+
 DRIVER_PACKAGES = {
-    "IntelGPU": {
-        "path":    os.path.join(DRIVER_BASE, "Intel_Graphics_Driver"),
-        "pattern": "*.exe",
-        "args":    "/S /quiet /norestart",
-        "vendor":  "Intel",
+    "IntelGPU_Legacy": {
+        "path":    os.path.join(DRIVER_BASE, "Intel_Graphics_Driver", "legacy"),
+        "pattern": "*.exe", "args": "/s", "vendor": "Intel",
+    },
+    "IntelGPU_Maintenance": {
+        "path":    os.path.join(DRIVER_BASE, "Intel_Graphics_Driver", "maintenance"),
+        "pattern": "*.exe", "args": "/S /quiet /norestart", "vendor": "Intel",
+    },
+    "IntelGPU_Modern": {
+        "path":    os.path.join(DRIVER_BASE, "Intel_Graphics_Driver", "modern"),
+        "pattern": "*.exe", "args": "/S /quiet /norestart", "vendor": "Intel",
     },
     # 独显低端 — 目录 NVIDIA_Graphics_Driver\low\
     "NvidiaGPU_Low": {
@@ -85,6 +112,15 @@ def get_nvidia_pkg_key(hwid):
     if m and m.group(1) in NVIDIA_LOW_END_DEVS:
         return "NvidiaGPU_Low"
     return "NvidiaGPU_High"
+
+def get_intel_pkg_key(hwid):
+    """Intel 3-tier: legacy / maintenance / modern"""
+    m = __import__('re').search(r'DEV_(\w{4})', hwid)
+    if m:
+        dev = m.group(1)
+        if dev in INTEL_LEGACY_DEVS:      return "IntelGPU_Legacy"
+        if dev in INTEL_MAINTENANCE_DEVS: return "IntelGPU_Maintenance"
+    return "IntelGPU_Modern"
 
 ERROR_CODE_MAP = {
     1: "设备配置不正确",  3: "驱动损坏",      10: "无法启动",
@@ -402,15 +438,22 @@ def install_driver_package(pkg, device_name):
             return False
 
         if exit_code in SUCCESS_CODES:
-            cprint(f"    安装程序返回: {exit_code}（成功）", Color.GREEN)
+            cprint(f"    安装程序返回: {exit_code}，驱动已安装成功", Color.GREEN)
+            time.sleep(3)
+            try:
+                subprocess.run(["pnputil", "/scan-devices"], capture_output=True, timeout=15)
+            except Exception:
+                pass
+            return True
+        else:
+            cprint(f"    安装程序返回: {exit_code}（非标准码，等待验证实际结果）", Color.YELLOW)
             cprint("    等待驱动安装完成...", Color.GRAY)
-            for _ in range(12):
+            for _ in range(6):
                 time.sleep(5)
                 try:
                     subprocess.run(["pnputil", "/scan-devices"], capture_output=True, timeout=15)
                 except Exception:
                     pass
-
             cprint("    验证设备状态...", Color.GRAY)
             try:
                 result = subprocess.run(
@@ -427,11 +470,7 @@ def install_driver_package(pkg, device_name):
                     return True
             except Exception:
                 pass
-
-            cprint("    驱动安装程序已成功完成，但设备状态尚未更新（可能需要重启）", Color.YELLOW)
-            return True
-        else:
-            cprint(f"    安装失败，退出码: {exit_code}", Color.RED)
+            cprint("    安装可能未生效（非标准退出码且设备状态未更新）", Color.YELLOW)
             return False
 
     except Exception as e:
@@ -456,9 +495,9 @@ def invoke_auto_install(err_devices, video_controllers=None):
     for gpu in err_devices:
         gpu_type = gpu.get("Type", "")
         if gpu_type == "核显":
-            need_intel = True
-        elif gpu_type == "独显":
-            need_nvidia = True
+            need_intel = True   # 核显一律强制安装
+        elif gpu_type == "独显" and gpu.get("Status") == "ERR":
+            need_nvidia = True  # 独显仅异常时安装
 
     # 备用检测
     if not need_intel and not need_nvidia:
@@ -473,11 +512,16 @@ def invoke_auto_install(err_devices, video_controllers=None):
     needed_pkgs = []
 
     if need_intel:
-        if test_driver_package(DRIVER_PACKAGES["IntelGPU"]):
-            needed_pkgs.append("IntelGPU")
-        else:
-            cprint("  警告: Intel 核显驱动包不可用，跳过", Color.YELLOW)
-            install_log.append("核显: Intel 驱动包不可用")
+        intel_pkg_keys = set()
+        for gpu in err_devices:
+            if gpu.get("Type") == "核显":
+                intel_pkg_keys.add(get_intel_pkg_key(gpu.get("HWID", "")))
+        for ik in intel_pkg_keys:
+            if test_driver_package(DRIVER_PACKAGES[ik]):
+                needed_pkgs.append(ik)
+            else:
+                cprint(f"  警告: Intel 核显驱动包不可用 ({ik})，跳过", Color.YELLOW)
+                install_log.append(f"核显: Intel 驱动包不可用 ({ik})")
 
     if need_nvidia:
         # 根据 DEV ID 确定需要哪些 NVIDIA 驱动包
@@ -505,12 +549,17 @@ def invoke_auto_install(err_devices, video_controllers=None):
         hwid = gpu.get("HWID", "")
         cprint(f"    - {name} ({gpu['ErrText']})  [{hwid}]", Color.YELLOW)
 
-        if gpu_type == "核显" and "IntelGPU" in needed_pkgs:
-            if install_driver_package(DRIVER_PACKAGES["IntelGPU"], name):
-                install_log.append(f"核显({name}): Intel 驱动安装成功")
-                any_success = True
+        if gpu_type == "核显":
+            ik = get_intel_pkg_key(hwid)
+            if ik in needed_pkgs:
+                tier = {"IntelGPU_Legacy":"Legacy","IntelGPU_Maintenance":"Mnt","IntelGPU_Modern":"Modern"}.get(ik,ik)
+                if install_driver_package(DRIVER_PACKAGES[ik], name):
+                    install_log.append(f"核显({name}): Intel-{tier} 驱动安装成功")
+                    any_success = True
+                else:
+                    install_log.append(f"核显({name}): Intel-{tier} 驱动安装失败")
             else:
-                install_log.append(f"核显({name}): Intel 驱动安装失败")
+                install_log.append(f"核显({name}): 驱动包不可用，跳过")
         elif gpu_type == "独显":
             nk = get_nvidia_pkg_key(hwid)
             if nk in needed_pkgs:
@@ -576,14 +625,14 @@ def main():
     scan1 = invoke_gpu_scan()
     write_result(scan1)
 
-    if scan1["ProblemCount"] == 0:
-        if args.save_txt:
-            save_txt_report(scan1, "v6", output_dir=output_dir)
-        if args.wait:
-            input("按 Enter 键退出")
-        sys.exit(0)
-
+    # 仅检测模式：有异常直接退出
     if not args.auto_install:
+        if scan1["ProblemCount"] == 0:
+            if args.save_txt:
+                save_txt_report(scan1, "v6", output_dir=output_dir)
+            if args.wait:
+                input("按 Enter 键退出")
+            sys.exit(0)
         if args.save_txt:
             save_txt_report(scan1, "v6", output_dir=output_dir)
         if args.wait:
@@ -593,17 +642,38 @@ def main():
     # ============================================================
     # AutoInstall
     # ============================================================
+    # 核显：强制安装（无论当前状态）
+    # 独显：仅异常时安装
+    force_intel = [d for d in scan1["ResultList"] if d["Type"] == "核显"]
     err_devices = [d for d in scan1["ResultList"] if d["Status"] == "ERR"]
-    cprint(f"  异常设备: {len(err_devices)} 个", Color.YELLOW)
-    for d in err_devices:
-        hwid_info = f"  [{d['HWID']}]" if d.get("HWID") else ""
-        cprint(f"    - [{d['Type']}] {d['Name']}  ({d['ErrText']}){hwid_info}", Color.YELLOW)
-    print()
+
+    if err_devices:
+        cprint(f"  异常设备: {len(err_devices)} 个", Color.YELLOW)
+        for d in err_devices:
+            hwid_info = f"  [{d['HWID']}]" if d.get("HWID") else ""
+            cprint(f"    - [{d['Type']}] {d['Name']}  ({d['ErrText']}){hwid_info}", Color.YELLOW)
+        print()
+
+    if force_intel:
+        cprint(f"  核显强制安装: {len(force_intel)} 个", Color.CYAN)
+        for d in force_intel:
+            status = "OK" if d["Status"] == "OK" else "ERR"
+            cprint(f"    - [{d['Type']}] {d['Name']}  (当前: {status})", Color.CYAN)
+        print()
+
+    if not err_devices and not force_intel:
+        if args.save_txt:
+            save_txt_report(scan1, "v6", output_dir=output_dir)
+        if args.wait:
+            input("按 Enter 键退出")
+        sys.exit(0)
 
     if args.save_txt:
         save_txt_report(scan1, "v6", output_dir=output_dir)
 
-    install_result = invoke_auto_install(err_devices, scan1.get("VideoControllers", []))
+    # 安装列表 = 核显(强制) + 独显(仅异常)
+    install_devices = force_intel + [d for d in err_devices if d["Type"] != "核显"]
+    install_result = invoke_auto_install(install_devices, scan1.get("VideoControllers", []))
     install_log = install_result["log"]
 
     # ============================================================
